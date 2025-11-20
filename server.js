@@ -12,6 +12,7 @@ const cors = require("cors");
 const sensoresRoutes = require("./routes/sensores");
 const medicoesRoutes = require("./routes/medicoes");
 const climaRoutes = require("./routes/clima");
+const alertasRoutes = require("./routes/alertas"); // ← ADICIONE AQUI
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use(express.json());
 app.use("/api/sensores", sensoresRoutes);
 app.use("/api/medicoes", medicoesRoutes);
 app.use("/api/clima", climaRoutes);
+app.use("/api/alertas", alertasRoutes); // ← ADICIONE AQUI
 
 // ============================================
 // ROTA 404 (DEVE SER A ÚLTIMA)
