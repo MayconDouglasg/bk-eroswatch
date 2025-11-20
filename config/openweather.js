@@ -49,19 +49,20 @@ function processarPrevisao(data) {
     }
   });
 
-  // Pegar dados atuais (primeira previsão)
-  const atual = proximasHoras[0];
-
-  return {
-    temperatura: atual.main.temp,
-    umidade: atual.main.humidity,
-    vento: atual.wind.speed,
-    descricao: atual.weather[0].description,
-    chuva_proximas_24h: chuvaPrevista,
-    risco_chuva_intensa: chuvaPrevista > 30, // > 30mm = intenso
-    timestamp: new Date().toISOString(),
-  };
-}
+      // Pegar dados atuais (primeira previsão)
+      const atual = proximasHoras[0];
+      const chuvaAtual3h = atual.rain && atual.rain["3h"] ? atual.rain["3h"] : 0;
+  
+      return {
+        temperatura: atual.main.temp,
+        umidade: atual.main.humidity,
+        vento: atual.wind.speed,
+        descricao: atual.weather[0].description,
+        chuva_proximas_24h: chuvaPrevista,
+        risco_chuva_intensa: chuvaPrevista > 30, // > 30mm = intenso
+        chuva_atual_3h: chuvaAtual3h, // Adicionado chuva nas próximas 3 horas
+        timestamp: new Date().toISOString(),
+      };}
 
 /**
  * Determinar se há risco com base em clima + solo
