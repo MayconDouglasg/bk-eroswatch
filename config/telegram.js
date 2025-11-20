@@ -9,28 +9,64 @@ const axios = require("axios");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+console.log("🔍 [TELEGRAM INIT]");
+console.log("   Token presente?", !!TELEGRAM_TOKEN);
+console.log("   Chat ID:", CHAT_ID, "| Tipo:", typeof CHAT_ID);
+
 /**
  * Enviar mensagem para o Telegram
  */
 async function enviarMensagem(mensagem) {
-  if (!TELEGRAM_TOKEN || !CHAT_ID) {
-    console.error("❌ Telegram não configurado (.env)");
-    return false;
-  }
-
-  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-
   try {
-    const response = await axios.post(url, {
-      chat_id: CHAT_ID,
+    if (!TELEGRAM_TOKEN || !CHAT_ID) {
+      console.error("❌ Telegram não configurado (.env)");
+      console.error("   TELEGRAM_TOKEN:", !!TELEGRAM_TOKEN);
+      console.error("   TELEGRAM_CHAT_ID:", !!CHAT_ID);
+      return false;
+    }
+
+    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+
+    // ✅ CONVERTER CHAT_ID PARA INTEIRO (suporta grupos negativos)
+    const chatIdFormatado = parseInt(String(CHAT_ID));
+
+    console.log("📤 [TELEGRAM] Preparando envio...");
+    console.log("   URL:", url);
+    console.log("   Chat ID formatado:", chatIdFormatado);
+    console.log("   Tamanho da mensagem:", mensagem.length);
+
+    const payload = {
+      chat_id: chatIdFormatado, // ✅ AGORA É INTEIRO
       text: mensagem,
-      parse_mode: "Markdown",
+      parse_mode: "HTML", // ✅ MUDADO PARA HTML
+    };
+
+    const response = await axios.post(url, payload, {
+      timeout: 15000,
     });
 
-    console.log("✅ Mensagem enviada ao Telegram");
-    return true;
+    if (response.data.ok) {
+      console.log("✅ [TELEGRAM] Mensagem enviada com sucesso!");
+      console.log("   Message ID:", response.data.result.message_id);
+      return true;
+    } else {
+      console.error("❌ [TELEGRAM] Erro na resposta:", response.data);
+      return false;
+    }
   } catch (error) {
-    console.error("❌ Erro ao enviar Telegram:", error.message);
+    console.error("\n❌ [TELEGRAM] Erro ao enviar:");
+    console.error("   Mensagem:", error.message);
+
+    if (error.response) {
+      console.error("   Status HTTP:", error.response.status);
+      console.error(
+        "   Dados da resposta:",
+        JSON.stringify(error.response.data, null, 2)
+      );
+    } else if (error.request) {
+      console.error("   Requisição feita mas sem resposta");
+    }
+
     return false;
   }
 }
@@ -156,77 +192,91 @@ const ACOES_POR_RISCO = {
 /**
  * Formatar alerta COMPLETO com plano de ação
  */
-function formatarAlertaCompleto(medicao, sensor, previsaoClima = null) {
+function formatarAlertaCompleto(
+  medicao,
+  sensor,
+  previsaoClima = null,
+  erosao = null
+) {
   const nivel = medicao.nivel_risco;
   const config = ACOES_POR_RISCO[nivel];
 
   if (!config) {
-    return formatarAlertaSimples(medicao, sensor); // Fallback
+    return formatarAlertaSimples(medicao, sensor);
   }
 
-  // Header com emoji e severidade
+  // ✅ USAR HTML AO INVÉS DE MARKDOWN
   let mensagem = `
-${config.emoji} *ALERTA ${config.cor} - EROWATCH* ${config.emoji}
+${config.emoji} <b>ALERTA ${config.cor} - EROWATCH</b> ${config.emoji}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📍 *LOCALIZAÇÃO*
+<b>📍 LOCALIZAÇÃO</b>
 ${sensor.regiao}
-Sensor: ${sensor.identificador}
+Sensor: <code>${sensor.identificador}</code>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *SITUAÇÃO ATUAL DO SOLO*
-💧 Umidade: *${medicao.umidade_solo.toFixed(1)}%* ${
+<b>📊 SITUAÇÃO ATUAL DO SOLO</b>
+💧 Umidade: <b>${medicao.umidade_solo.toFixed(1)}%</b> ${
     medicao.umidade_solo > 70 ? "⚠️ SATURADO" : ""
   }
-🌡️ Temperatura: ${medicao.temperatura_solo.toFixed(1)}°C
-📐 Inclinação: *${medicao.inclinacao_graus.toFixed(1)}°*
-${medicao.alerta_chuva ? "🌧️ *ALERTA DE CHUVA ATIVA*" : ""}
+🌡️ Temperatura: <code>${medicao.temperatura_solo.toFixed(1)}°C</code>
+📐 Inclinação: <b>${medicao.inclinacao_graus.toFixed(1)}°</b>
+${medicao.alerta_chuva ? "🌧️ <b>ALERTA DE CHUVA ATIVA</b>" : ""}
 `;
+
+  // Adicionar dados de erosão se disponível
+  if (erosao) {
+    mensagem += `
+<b>📈 ANÁLISE DE EROSÃO</b>
+Taxa: <b>${erosao.taxa} t/ha/ano</b>
+Classificação: <b>${erosao.risco}</b>
+    `;
+  }
 
   // Adicionar previsão climática se disponível
   if (previsaoClima) {
     mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌦️ *PREVISÃO CLIMÁTICA (24h)*
+<b>🌦️ PREVISÃO CLIMÁTICA (24h)</b>
 ${previsaoClima.descricao}
-🌧️ Chuva prevista: *${previsaoClima.chuva_proximas_24h.toFixed(1)}mm*
-💨 Vento: ${previsaoClima.vento.toFixed(1)} km/h
-${previsaoClima.risco_chuva_intensa ? "\n⚠️ *RISCO DE CHUVA INTENSA*" : ""}
-`;
+🌧️ Chuva prevista: <b>${previsaoClima.chuva_proximas_24h.toFixed(1)}mm</b>
+💨 Vento: <code>${previsaoClima.vento.toFixed(1)} km/h</code>
+${previsaoClima.risco_chuva_intensa ? "\n⚠️ <b>RISCO DE CHUVA INTENSA</b>" : ""}
+    `;
   }
 
   mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *NÍVEL DE RISCO: ${nivel}*
+⚠️ <b>NÍVEL DE RISCO: ${nivel}</b>
 `;
 
-  // Ações IMEDIATAS (sempre mostrar)
+  // Ações IMEDIATAS
   if (config.imediatas.length > 0) {
     mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 *AÇÕES IMEDIATAS (AGORA)*
+<b>🚨 AÇÕES IMEDIATAS (AGORA)</b>
 `;
     config.imediatas.forEach((acao, index) => {
       mensagem += `${index + 1}. ${acao}\n`;
     });
   }
 
-  // Ações PREVENTIVAS (se não for BAIXO)
+  // Ações PREVENTIVAS
   if (nivel !== "BAIXO" && config.preventivas.length > 0) {
     mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🛡️ *PREVENÇÃO (Próximos dias)*
+<b>🛡️ PREVENÇÃO (Próximos dias)</b>
 `;
     config.preventivas.forEach((acao, index) => {
       mensagem += `${index + 1}. ${acao}\n`;
     });
   }
 
-  // Plano de RECUPERAÇÃO (sempre mostrar)
+  // Plano de RECUPERAÇÃO
   if (config.recuperacao.length > 0) {
     mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌱 *RECUPERAÇÃO DO SOLO*
+<b>🌱 RECUPERAÇÃO DO SOLO</b>
 `;
     config.recuperacao.forEach((acao, index) => {
       mensagem += `${index + 1}. ${acao}\n`;
@@ -236,7 +286,7 @@ ${previsaoClima.risco_chuva_intensa ? "\n⚠️ *RISCO DE CHUVA INTENSA*" : ""}
   // Contatos de Emergência
   mensagem += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📞 *CONTATOS DE APOIO*
+<b>📞 CONTATOS DE APOIO</b>
 `;
   config.contatos.forEach((contato) => {
     mensagem += `${contato}\n`;
@@ -247,11 +297,8 @@ ${previsaoClima.risco_chuva_intensa ? "\n⚠️ *RISCO DE CHUVA INTENSA*" : ""}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 ${new Date(medicao.timestamp).toLocaleString("pt-BR")}
 
-📚 *Cartilha Completa:* eroswatch.com.br/guia
-🎥 *Tutoriais em Vídeo:* youtube.com/@eroswatch
-
-_Sistema EroWatch - Combate à Erosão_
-_ODS 15: Vida Terrestre_
+<i>Sistema EroWatch - Combate à Erosão</i>
+<i>ODS 15: Vida Terrestre</i>
   `.trim();
 
   return mensagem;
@@ -271,17 +318,17 @@ function formatarAlertaSimples(medicao, sensor) {
   const nivelEmoji = emoji[medicao.nivel_risco] || "⚠️";
 
   return `
-${nivelEmoji} *ALERTA EROWATCH* ${nivelEmoji}
+${nivelEmoji} <b>ALERTA EROWATCH</b> ${nivelEmoji}
 
-📍 *Local:* ${sensor.regiao}
-🏷️ *Sensor:* ${sensor.identificador}
+📍 <b>Local:</b> ${sensor.regiao}
+🏷️ <b>Sensor:</b> ${sensor.identificador}
 
-📊 *DADOS ATUAIS:*
-💧 Umidade Solo: *${medicao.umidade_solo.toFixed(1)}%*
-🌡️ Temperatura: *${medicao.temperatura_solo.toFixed(1)}°C*
-📐 Inclinação: *${medicao.inclinacao_graus.toFixed(1)}°*
+<b>📊 DADOS ATUAIS:</b>
+💧 Umidade Solo: <b>${medicao.umidade_solo.toFixed(1)}%</b>
+🌡️ Temperatura: <b>${medicao.temperatura_solo.toFixed(1)}°C</b>
+📐 Inclinação: <b>${medicao.inclinacao_graus.toFixed(1)}°</b>
 
-⚠️ *RISCO: ${medicao.nivel_risco}*
+⚠️ <b>RISCO: ${medicao.nivel_risco}</b>
 
 🕐 ${new Date(medicao.timestamp).toLocaleString("pt-BR")}
   `.trim();
@@ -292,7 +339,7 @@ ${nivelEmoji} *ALERTA EROWATCH* ${nivelEmoji}
  */
 function formatarRelatorioRotina(medicoes, sensores) {
   let mensagem = `
-☀️ *RELATÓRIO DIÁRIO EROWATCH* ☀️
+☀️ <b>RELATÓRIO DIÁRIO EROWATCH</b> ☀️
 
 ${new Date().toLocaleDateString("pt-BR", {
   weekday: "long",
@@ -301,7 +348,7 @@ ${new Date().toLocaleDateString("pt-BR", {
 })}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *RESUMO GERAL*
+<b>📊 RESUMO GERAL</b>
 `;
 
   // Agrupar por nível de risco
@@ -321,31 +368,31 @@ ${new Date().toLocaleDateString("pt-BR", {
 
   // Mostrar áreas por risco
   if (porRisco.CRITICO.length > 0) {
-    mensagem += `\n🚨 *CRÍTICO:* ${porRisco.CRITICO.join(", ")}`;
+    mensagem += `\n🚨 <b>CRÍTICO:</b> ${porRisco.CRITICO.join(", ")}`;
   }
   if (porRisco.ALTO.length > 0) {
-    mensagem += `\n🔴 *ALTO:* ${porRisco.ALTO.join(", ")}`;
+    mensagem += `\n🔴 <b>ALTO:</b> ${porRisco.ALTO.join(", ")}`;
   }
   if (porRisco.MEDIO.length > 0) {
-    mensagem += `\n🟡 *MÉDIO:* ${porRisco.MEDIO.join(", ")}`;
+    mensagem += `\n🟡 <b>MÉDIO:</b> ${porRisco.MEDIO.join(", ")}`;
   }
   if (porRisco.BAIXO.length > 0) {
-    mensagem += `\n🟢 *BAIXO:* ${porRisco.BAIXO.join(", ")}`;
+    mensagem += `\n🟢 <b>BAIXO:</b> ${porRisco.BAIXO.join(", ")}`;
   }
 
   mensagem += `
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *DICA DO DIA*
+💡 <b>DICA DO DIA</b>
 ${getDicaDoDia()}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *Agenda Comunitária*
+📅 <b>Agenda Comunitária</b>
 • Oficina de Contenção: Sáb 15/11, 9h
 • Distribuição de Mudas: Qui 20/11, 14h
 • Mutirão de Limpeza: Dom 25/11, 8h
 
-_Mantenha-se informado pelo grupo!_
+<i>Mantenha-se informado pelo grupo!</i>
   `.trim();
 
   return mensagem;
