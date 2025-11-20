@@ -3,15 +3,15 @@
  * Cliente PostgreSQL na nuvem
  */
 
-require('dotenv').config();
-const { createClient } = require('@supabase/supabase-js');
+require("dotenv").config();
+const { createClient } = require("@supabase/supabase-js");
 
 // Validar variáveis de ambiente
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
-  console.error('❌ ERRO: Credenciais do Supabase não encontradas!');
-  console.error('Verifique se o arquivo .env existe e contém:');
-  console.error('- SUPABASE_URL');
-  console.error('- SUPABASE_KEY');
+  console.error("❌ ERRO: Credenciais do Supabase não encontradas!");
+  console.error("Verifique se o arquivo .env existe e contém:");
+  console.error("- SUPABASE_URL");
+  console.error("- SUPABASE_KEY");
   process.exit(1);
 }
 
@@ -25,14 +25,14 @@ const supabase = createClient(
 async function testarConexao() {
   try {
     const { data, error } = await supabase
-      .from('sensores')
-      .select('count')
+      .from("sensores")
+      .select("count")
       .limit(1);
-    
+
     if (error) throw error;
-    console.log('✅ Conexão com Supabase estabelecida!');
+    console.log("✅ Conexão com Supabase estabelecida!");
   } catch (error) {
-    console.error('❌ Erro ao conectar com Supabase:', error.message);
+    console.error("❌ Erro ao conectar com Supabase:", error.message);
   }
 }
 
