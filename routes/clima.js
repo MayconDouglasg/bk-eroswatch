@@ -1,61 +1,87 @@
+/**
+ * ROTAS: Clima
+ * Integração com OpenWeather
+ */
+
 const express = require("express");
 const router = express.Router();
-const { buscarPrevisao } = require("../config/openweather");
 const supabase = require("../config/supabase");
+const { buscarPrevisao } = require("../config/openweather");
 
-// GET /api/clima/sensor/:id - Previsão para um sensor
-router.get("/sensor/:id", async (req, res) => {
+/**
+ * GET /api/clima/sensor/:sensorId
+ * Retorna previsão do tempo para um sensor
+ */
+router.get("/sensor/:sensorId", async (req, res) => {
   try {
-    const { id } = req.params;
+    const { sensorId } = req.params;
 
-    // Buscar coordenadas do sensor
-    const { data: sensor } = await supabase
+    // Buscar localização do sensor
+    const { data: sensor, error } = await supabase
       .from("sensores")
-      .select("latitude, longitude, regiao")
-      .eq("id", id)
+      .select("latitude, longitude, identificador, regiao")
+      .eq("id", sensorId)
       .single();
 
-    if (!sensor) {
-      return res.status(404).json({ error: "Sensor não encontrado" });
+    if (error || !sensor) {
+      return res.status(404).json({
+        success: false,
+        error: "Sensor não encontrado",
+      });
     }
 
-    // Buscar previsão
+    // Buscar previsão do OpenWeather
     const previsao = await buscarPrevisao(sensor.latitude, sensor.longitude);
 
     if (!previsao) {
-      return res.status(500).json({ error: "Erro ao buscar previsão" });
+      return res.status(500).json({
+        success: false,
+        error: "Erro ao buscar previsão",
+      });
     }
 
     res.json({
       success: true,
-      sensor: sensor.regiao,
+      sensor: {
+        id: sensorId,
+        identificador: sensor.identificador,
+        regiao: sensor.regiao,
+      },
       previsao,
     });
   } catch (error) {
+    console.error("❌ Erro ao buscar clima:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/clima/historico/:sensor_id - Histórico de previsões
-router.get("/historico/:sensor_id", async (req, res) => {
+/**
+ * GET /api/clima/historico/:sensorId
+ * Retorna histórico de previsões (últimos 7 dias)
+ */
+router.get("/historico/:sensorId", async (req, res) => {
   try {
-    const { sensor_id } = req.params;
+    const { sensorId } = req.params;
 
     const { data, error } = await supabase
       .from("previsoes_clima")
       .select("*")
-      .eq("sensor_id", sensor_id)
+      .eq("sensor_id", sensorId)
+      .gte(
+        "timestamp",
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      )
       .order("timestamp", { ascending: false })
-      .limit(50);
+      .limit(168); // 7 dias * 24 horas
 
     if (error) throw error;
 
     res.json({
       success: true,
-      quantidade: data.length,
       previsoes: data,
     });
   } catch (error) {
+    console.error("❌ Erro ao buscar histórico:", error);
     res.status(500).json({ error: error.message });
   }
 });

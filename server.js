@@ -24,7 +24,6 @@ const PORT = process.env.PORT || 3000;
 // ============================================
 // MIDDLEWARES
 // ============================================
-app.use("/api/clima", climaRoutes);
 
 // CORS: Permitir frontend acessar (IMPORTANTE!)
 app.use(
@@ -34,6 +33,8 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+app.use("/api/clima", climaRoutes);
 
 // Parser JSON
 app.use(express.json());

@@ -10,6 +10,7 @@ const {
 } = require("../config/openweather");
 
 const { enviarMensagem, formatarAlerta } = require("../config/telegram");
+const { calcularTaxaErosao } = require("./erosaoController");
 
 // ============================================
 // CACHE: Previsão do tempo (1 hora)
@@ -256,9 +257,9 @@ async function buscarMedicoesPorPeriodo(req, res) {
   }
 }
 
-// ============================================
-// 4. ESTATÍSTICAS GERAIS
-// ============================================
+/**
+ * 4. ESTATÍSTICAS GERAIS
+ */
 async function buscarEstatisticas(req, res) {
   try {
     // Última medição de cada sensor
@@ -266,6 +267,7 @@ async function buscarEstatisticas(req, res) {
       .from("medicoes")
       .select(
         `
+        id,
         sensor_id,
         sensores (identificador, regiao),
         umidade_solo,
@@ -297,9 +299,32 @@ async function buscarEstatisticas(req, res) {
       critico: contagemRisco.filter((m) => m.nivel_risco === "CRITICO").length,
     };
 
+    // Enriquecer últimas medições com dados de clima e erosão
+    const medicoesMelhores = await Promise.all(
+      ultimasMedicoes.map(async (med) => {
+        // Buscar previsão do clima
+        const { data: previsao } = await supabase
+          .from("previsoes_clima")
+          .select("*")
+          .eq("sensor_id", med.sensor_id)
+          .order("timestamp", { ascending: false })
+          .limit(1)
+          .single();
+
+        // Calcular erosão
+        const erosao = calcularTaxaErosao(med, previsao);
+
+        return {
+          ...med,
+          previsao,
+          erosao,
+        };
+      })
+    );
+
     res.json({
       success: true,
-      ultimasMedicoes,
+      ultimasMedicoes: medicoesMelhores,
       estatisticasUltimas24h: stats,
     });
   } catch (error) {
