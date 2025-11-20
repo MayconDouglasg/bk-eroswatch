@@ -9,7 +9,12 @@ const {
   calcularRiscoCombinado,
 } = require("../config/openweather");
 
-const { enviarMensagem, formatarAlerta } = require("../config/telegram");
+const {
+  enviarMensagem,
+  formatarAlertaCompleto,
+  formatarAlertaSimples,
+} = require("../config/telegram");
+
 const { calcularTaxaErosao } = require("./erosaoController");
 
 // ============================================
@@ -42,23 +47,13 @@ async function buscarPrevisaoComCache(sensorId, latitude, longitude) {
 }
 
 // ============================================
-// FUNÇÃO AUXILIAR: Enviar alerta crítico
-// ============================================
-async function enviarAlertaCritico(sensor_id, medicao, previsao) {
-  try {
-    const mensagem = `🚨 ALERTA CRÍTICO!\nSensor: ${sensor_id}\nRisco: CRÍTICO\nChuva prevista: ${previsao.chuva_proximas_24h}mm`;
-    await enviarMensagem(mensagem);
-    console.log("🚨 Alerta crítico enviado");
-  } catch (error) {
-    console.error("❌ Erro ao enviar alerta crítico:", error);
-  }
-}
-
-// ============================================
 // 1. CRIAR NOVA MEDIÇÃO (ESP32 envia dados)
 // ============================================
 async function criarMedicao(req, res) {
   try {
+    console.log("\n📌 [MEDIÇÃO] Iniciando criação de medição...");
+    console.log("   Payload:", JSON.stringify(req.body));
+
     const {
       sensor_id,
       umidade_solo,
@@ -72,6 +67,7 @@ async function criarMedicao(req, res) {
 
     // Validação básica
     if (!sensor_id || !nivel_risco) {
+      console.error("❌ Campos obrigatórios faltando");
       return res.status(400).json({
         error: "Campos obrigatórios: sensor_id, nivel_risco",
       });
@@ -94,88 +90,124 @@ async function criarMedicao(req, res) {
       ])
       .select();
 
-    if (error) throw error;
+    if (error) {
+      console.error("❌ Erro ao inserir:", error);
+      throw error;
+    }
 
-    // Buscar previsão do tempo COM CACHE
-    const { data: sensor } = await supabase
+    const medicaoInserida = data[0];
+    console.log(`✅ Medição inserida: ID ${medicaoInserida.id}`);
+
+    // Buscar dados do sensor
+    console.log("📍 Buscando dados do sensor...");
+    const { data: sensor, error: sensorError } = await supabase
       .from("sensores")
-      .select("latitude, longitude")
+      .select("*")
       .eq("id", sensor_id)
       .single();
 
+    if (sensorError) {
+      console.error("❌ Erro ao buscar sensor:", sensorError);
+    } else {
+      console.log(`✅ Sensor: ${sensor?.identificador} (${sensor?.regiao})`);
+    }
+
+    // Buscar previsão do tempo COM CACHE
+    console.log("🌤️ Buscando previsão do clima...");
+    let previsao = null;
     if (sensor && sensor.latitude && sensor.longitude) {
-      const previsao = await buscarPrevisaoComCache(
+      previsao = await buscarPrevisaoComCache(
         sensor_id,
         sensor.latitude,
         sensor.longitude
       );
-
       if (previsao) {
-        // Armazenar previsão no banco
-        await supabase.from("previsoes_clima").insert([
-          {
-            sensor_id,
-            temperatura: previsao.temperatura,
-            umidade: previsao.umidade,
-            vento: previsao.vento,
-            descricao: previsao.descricao,
-            chuva_proximas_24h: previsao.chuva_proximas_24h,
-            risco_chuva_intensa: previsao.risco_chuva_intensa,
-          },
-        ]);
-
-        // Recalcular risco combinando solo + clima
-        const riscoFinal = calcularRiscoCombinado(data[0], previsao);
-
-        // Se risco mudou para mais grave, atualizar
-        if (riscoFinal !== data[0].nivel_risco) {
-          await supabase
-            .from("medicoes")
-            .update({ nivel_risco: riscoFinal })
-            .eq("id", data[0].id);
-
-          console.log(
-            `⚠️ Risco ajustado: ${data[0].nivel_risco} → ${riscoFinal} (clima)`
-          );
-        }
-
-        // Se CRITICO, enviar alerta urgente
-        if (riscoFinal === "CRITICO") {
-          await enviarAlertaCritico(sensor_id, data[0], previsao);
-        }
+        console.log(`✅ Previsão: ${previsao.chuva_proximas_24h}mm chuva`);
       }
     }
 
-    // Se risco ALTO ou CRITICO, enviar alerta ao Telegram
-    if (nivel_risco === "ALTO" || nivel_risco === "CRITICO") {
-      // Buscar dados do sensor
-      const { data: sensorData } = await supabase
-        .from("sensores")
-        .select("*")
-        .eq("id", sensor_id)
-        .single();
+    // Calcular taxa de erosão
+    const erosao = calcularTaxaErosao(medicaoInserida, previsao);
+    console.log(`📊 Erosão: ${erosao?.taxa} t/ha (${erosao?.risco})`);
 
-      // Formatar e enviar mensagem
-      const mensagem = formatarAlerta(data[0], sensorData);
-      await enviarMensagem(mensagem);
-
-      // Criar alerta no banco
-      await criarAlertaAutomatico(
-        sensor_id,
-        data[0].id,
-        umidade_solo,
-        inclinacao_graus
-      );
+    // Recalcular risco combinando solo + clima
+    let riscoFinal = nivel_risco;
+    if (previsao) {
+      riscoFinal = calcularRiscoCombinado(medicaoInserida, previsao);
+      console.log(`⚠️ Risco ajustado: ${nivel_risco} → ${riscoFinal}`);
     }
 
-    console.log(
-      `✅ Medição criada: Sensor ${sensor_id} - Risco ${nivel_risco}`
-    );
+    // ========================================
+    // ENVIAR ALERTAS PARA TELEGRAM
+    // ========================================
+    console.log("\n🔔 [TELEGRAM] Verificando necessidade de alerta...");
+    console.log(`   Nível de risco: ${riscoFinal}`);
+
+    if (riscoFinal === "CRITICO" || riscoFinal === "ALTO") {
+      console.log(`🚨 [TELEGRAM] Enviando alerta ${riscoFinal}...`);
+
+      try {
+        // Formatar mensagem completa com plano de ação
+        const mensagem = formatarAlertaCompleto(
+          medicaoInserida,
+          sensor,
+          previsao
+        );
+
+        console.log("📨 [TELEGRAM] Conteúdo da mensagem:");
+        console.log(mensagem);
+
+        // Enviar para Telegram
+        const enviado = await enviarMensagem(mensagem);
+
+        if (enviado) {
+          console.log("✅ [TELEGRAM] Mensagem enviada com sucesso!");
+        } else {
+          console.error("❌ [TELEGRAM] Falha ao enviar");
+        }
+      } catch (telegramError) {
+        console.error("❌ [TELEGRAM] Erro:", telegramError);
+      }
+
+      // Registrar alerta no banco de dados
+      try {
+        const nivelCriticidade = riscoFinal === "CRITICO" ? "CRITICO" : "ALTO";
+        await supabase.from("alertas").insert([
+          {
+            sensor_id,
+            medicao_id: medicaoInserida.id,
+            tipo_alerta: `RISCO_${riscoFinal}`,
+            nivel_criticidade: nivelCriticidade,
+            mensagem: `Risco ${riscoFinal}: Taxa de Erosão ${erosao?.taxa} t/ha`,
+            status: "ativo",
+          },
+        ]);
+        console.log("✅ Alerta registrado no banco");
+      } catch (dbError) {
+        console.error("❌ Erro ao registrar alerta:", dbError);
+      }
+    } else {
+      console.log(`ℹ️ [TELEGRAM] Sem alerta necessário (risco: ${riscoFinal})`);
+    }
+
+    // Atualizar risco se mudou
+    if (riscoFinal !== medicaoInserida.nivel_risco) {
+      await supabase
+        .from("medicoes")
+        .update({ nivel_risco: riscoFinal })
+        .eq("id", medicaoInserida.id);
+    }
+
+    console.log("✅ Processo concluído\n");
 
     res.status(201).json({
       success: true,
       message: "Medição registrada com sucesso",
-      data: data[0],
+      data: {
+        ...medicaoInserida,
+        nivel_risco: riscoFinal,
+        erosao,
+      },
     });
   } catch (error) {
     console.error("❌ Erro ao criar medição:", error);
@@ -202,7 +234,6 @@ async function buscarMedicoesRecentes(req, res) {
       .order("timestamp", { ascending: false })
       .limit(limite);
 
-    // Filtrar por sensor específico (opcional)
     if (sensor_id) {
       query = query.eq("sensor_id", sensor_id);
     }
@@ -257,13 +288,14 @@ async function buscarMedicoesPorPeriodo(req, res) {
   }
 }
 
-/**
- * 4. ESTATÍSTICAS GERAIS
- */
+// ============================================
+// 4. ESTATÍSTICAS GERAIS
+// ============================================
 async function buscarEstatisticas(req, res) {
   try {
-    // Última medição de cada sensor
-    const { data: ultimasMedicoes, error: error1 } = await supabase
+    const sensor_id = req.query.sensor_id;
+
+    let query = supabase
       .from("medicoes")
       .select(
         `
@@ -280,8 +312,13 @@ async function buscarEstatisticas(req, res) {
       .order("timestamp", { ascending: false })
       .limit(10);
 
-    // Contagem por nível de risco
-    const { data: contagemRisco, error: error2 } = await supabase
+    if (sensor_id) {
+      query = query.eq("sensor_id", sensor_id);
+    }
+
+    const { data: ultimasMedicoes, error: error1 } = await query;
+
+    let contagemQuery = supabase
       .from("medicoes")
       .select("nivel_risco")
       .gte(
@@ -289,20 +326,35 @@ async function buscarEstatisticas(req, res) {
         new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       );
 
+    if (sensor_id) {
+      contagemQuery = contagemQuery.eq("sensor_id", sensor_id);
+    }
+
+    const { data: contagemRisco, error: error2 } = await contagemQuery;
+
     if (error1 || error2) throw error1 || error2;
 
-    // Calcular estatísticas
+    // Normalizar nivel_risco
+    const normalized = (v) =>
+      String(v || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toUpperCase();
+
     const stats = {
-      baixo: contagemRisco.filter((m) => m.nivel_risco === "BAIXO").length,
-      medio: contagemRisco.filter((m) => m.nivel_risco === "MEDIO").length,
-      alto: contagemRisco.filter((m) => m.nivel_risco === "ALTO").length,
-      critico: contagemRisco.filter((m) => m.nivel_risco === "CRITICO").length,
+      baixo: contagemRisco.filter((m) => normalized(m.nivel_risco) === "BAIXO")
+        .length,
+      medio: contagemRisco.filter((m) => normalized(m.nivel_risco) === "MEDIO")
+        .length,
+      alto: contagemRisco.filter((m) => normalized(m.nivel_risco) === "ALTO")
+        .length,
+      critico: contagemRisco.filter(
+        (m) => normalized(m.nivel_risco) === "CRITICO"
+      ).length,
     };
 
-    // Enriquecer últimas medições com dados de clima e erosão
     const medicoesMelhores = await Promise.all(
       ultimasMedicoes.map(async (med) => {
-        // Buscar previsão do clima
         const { data: previsao } = await supabase
           .from("previsoes_clima")
           .select("*")
@@ -311,14 +363,8 @@ async function buscarEstatisticas(req, res) {
           .limit(1)
           .single();
 
-        // Calcular erosão
         const erosao = calcularTaxaErosao(med, previsao);
-
-        return {
-          ...med,
-          previsao,
-          erosao,
-        };
+        return { ...med, previsao, erosao };
       })
     );
 
@@ -330,35 +376,6 @@ async function buscarEstatisticas(req, res) {
   } catch (error) {
     console.error("❌ Erro ao buscar estatísticas:", error);
     res.status(500).json({ error: error.message });
-  }
-}
-
-// ============================================
-// FUNÇÃO AUXILIAR: Criar alerta automático
-// ============================================
-async function criarAlertaAutomatico(
-  sensor_id,
-  medicao_id,
-  umidade,
-  inclinacao
-) {
-  try {
-    let mensagem = `Solo saturado (${umidade}%) e inclinação crítica (${inclinacao}°). Risco iminente de deslizamento!`;
-
-    await supabase.from("alertas").insert([
-      {
-        sensor_id,
-        medicao_id,
-        tipo_alerta: "RISCO_ALTO",
-        nivel_criticidade: "ALTO",
-        mensagem,
-        status: "ativo",
-      },
-    ]);
-
-    console.log(`⚠️ Alerta criado automaticamente para sensor ${sensor_id}`);
-  } catch (error) {
-    console.error("❌ Erro ao criar alerta automático:", error);
   }
 }
 
