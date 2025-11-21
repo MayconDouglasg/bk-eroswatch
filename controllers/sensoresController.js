@@ -72,7 +72,13 @@ async function criarSensor(req, res) {
       regiao,
       latitude,
       longitude,
-      responsavel
+      responsavel,
+      // Novos campos geológicos
+      tipo_solo,
+      saturacao_critica,
+      saturacao_total,
+      angulo_atrito_critico,
+      coeficiente_coesao
     } = req.body;
 
     if (!identificador || !tipo || !regiao) {
@@ -90,7 +96,13 @@ async function criarSensor(req, res) {
         latitude,
         longitude,
         responsavel,
-        status: 'ativo'
+        status: 'ativo',
+        // Campos opcionais
+        tipo_solo: tipo_solo || null,
+        saturacao_critica: saturacao_critica || null,
+        saturacao_total: saturacao_total || null,
+        angulo_atrito_critico: angulo_atrito_critico || null,
+        coeficiente_coesao: coeficiente_coesao || null
       }])
       .select();
 
