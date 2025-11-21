@@ -1,6 +1,7 @@
 /**
- * TELEGRAM BOT - SISTEMA EROWATCH
- * Versão com orientações de COMBATE à erosão
+ * TELEGRAM BOT v2.0 - SISTEMA EROWATCH
+ * Versão com suporte ao algoritmo geotécnico avançado
+ * Orientações de COMBATE à erosão baseadas em ciência
  */
 
 require("dotenv").config();
@@ -9,7 +10,7 @@ const axios = require("axios");
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-console.log("🔍 [TELEGRAM INIT]");
+console.log("🔍 [TELEGRAM INIT v2.0]");
 console.log("   Token presente?", !!TELEGRAM_TOKEN);
 console.log("   Chat ID:", CHAT_ID, "| Tipo:", typeof CHAT_ID);
 
@@ -26,19 +27,16 @@ async function enviarMensagem(mensagem) {
     }
 
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-
-    // ✅ CONVERTER CHAT_ID PARA INTEIRO (suporta grupos negativos)
     const chatIdFormatado = parseInt(String(CHAT_ID));
 
     console.log("📤 [TELEGRAM] Preparando envio...");
-    console.log("   URL:", url);
     console.log("   Chat ID formatado:", chatIdFormatado);
     console.log("   Tamanho da mensagem:", mensagem.length);
 
     const payload = {
-      chat_id: chatIdFormatado, // ✅ AGORA É INTEIRO
+      chat_id: chatIdFormatado,
       text: mensagem,
-      parse_mode: "HTML", // ✅ MUDADO PARA HTML
+      parse_mode: "HTML",
     };
 
     const response = await axios.post(url, payload, {
@@ -72,7 +70,7 @@ async function enviarMensagem(mensagem) {
 }
 
 /**
- * Banco de Ações por Nível de Risco
+ * Banco de Ações por Nível de Risco (ATUALIZADO v2.0)
  */
 const ACOES_POR_RISCO = {
   CRITICO: {
@@ -190,7 +188,7 @@ const ACOES_POR_RISCO = {
 };
 
 /**
- * Formatar alerta COMPLETO com plano de ação
+ * Formatar alerta COMPLETO com plano de ação (ATUALIZADO v2.0)
  */
 function formatarAlertaCompleto(
   medicao,
@@ -205,14 +203,14 @@ function formatarAlertaCompleto(
     return formatarAlertaSimples(medicao, sensor);
   }
 
-  // ✅ USAR HTML AO INVÉS DE MARKDOWN
   let mensagem = `
-${config.emoji} <b>ALERTA ${config.cor} - EROWATCH</b> ${config.emoji}
+${config.emoji} <b>ALERTA ${config.cor} - EROWATCH v2.0</b> ${config.emoji}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <b>📍 LOCALIZAÇÃO</b>
 ${sensor.regiao}
 Sensor: <code>${sensor.identificador}</code>
+${sensor.tipo_solo ? `Tipo de Solo: <b>${sensor.tipo_solo}</b>` : ""}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 <b>📊 SITUAÇÃO ATUAL DO SOLO</b>
@@ -223,6 +221,45 @@ Sensor: <code>${sensor.identificador}</code>
 📐 Inclinação: <b>${medicao.inclinacao_graus.toFixed(1)}°</b>
 ${medicao.alerta_chuva ? "🌧️ <b>ALERTA DE CHUVA ATIVA</b>" : ""}
 `;
+
+  // ===== DADOS DO ALGORITMO AVANÇADO =====
+  if (medicao.indice_risco !== undefined && medicao.indice_risco !== null) {
+    mensagem += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>🔬 ANÁLISE GEOTÉCNICA</b>
+📊 Índice de Risco: <b>${medicao.indice_risco.toFixed(1)}/100</b>
+`;
+
+    // Mostrar fatores se disponíveis
+    if (medicao.fator_saturacao || medicao.fator_inclinacao) {
+      mensagem += `\n<b>Fatores Contribuintes:</b>\n`;
+
+      if (medicao.fator_saturacao) {
+        const satPercent = (medicao.fator_saturacao * 100).toFixed(0);
+        mensagem += `• Saturação: ${satPercent}%\n`;
+      }
+
+      if (medicao.fator_inclinacao) {
+        const incPercent = (medicao.fator_inclinacao * 100).toFixed(0);
+        mensagem += `• Inclinação: ${incPercent}%\n`;
+      }
+
+      if (medicao.fator_interacao) {
+        const intPercent = (medicao.fator_interacao * 100).toFixed(0);
+        mensagem += `• Interação Solo-Declive: ${intPercent}%\n`;
+      }
+
+      if (medicao.perda_coesao) {
+        const coesaoPercent = ((1 - medicao.perda_coesao) * 100).toFixed(0);
+        mensagem += `• Coesão Residual: ${coesaoPercent}%\n`;
+      }
+    }
+
+    // Adicionar recomendação técnica se disponível
+    if (medicao.recomendacao) {
+      mensagem += `\n<i>${medicao.recomendacao}</i>\n`;
+    }
+  }
 
   // Adicionar dados de erosão se disponível
   if (erosao) {
@@ -249,6 +286,25 @@ ${previsaoClima.risco_chuva_intensa ? "\n⚠️ <b>RISCO DE CHUVA INTENSA</b>" :
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ <b>NÍVEL DE RISCO: ${nivel}</b>
 `;
+
+  // ===== ANÁLISE TÉCNICA ESPECÍFICA =====
+  if (
+    sensor.saturacao_critica &&
+    medicao.umidade_solo > sensor.saturacao_critica
+  ) {
+    mensagem += `
+<b>⚠️ ANÁLISE:</b> Solo ultrapassou saturação crítica (${sensor.saturacao_critica}%). Perda de coesão iniciada.
+`;
+  }
+
+  if (
+    sensor.angulo_atrito_critico &&
+    medicao.inclinacao_graus > sensor.angulo_atrito_critico
+  ) {
+    mensagem += `
+<b>🚨 ALERTA:</b> Inclinação excede ângulo de atrito crítico (${sensor.angulo_atrito_critico}°). Risco de ruptura.
+`;
+  }
 
   // Ações IMEDIATAS
   if (config.imediatas.length > 0) {
@@ -297,8 +353,8 @@ ${previsaoClima.risco_chuva_intensa ? "\n⚠️ <b>RISCO DE CHUVA INTENSA</b>" :
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🕐 ${new Date(medicao.timestamp).toLocaleString("pt-BR")}
 
-<i>Sistema EroWatch - Combate à Erosão</i>
-<i>ODS 15: Vida Terrestre</i>
+<i>Sistema EroWatch v2.0 - Algoritmo Geotécnico Avançado</i>
+<i>ODS 15: Vida Terrestre | Baseado em estudos de Petrópolis-RJ</i>
   `.trim();
 
   return mensagem;
@@ -317,21 +373,32 @@ function formatarAlertaSimples(medicao, sensor) {
 
   const nivelEmoji = emoji[medicao.nivel_risco] || "⚠️";
 
-  return `
-${nivelEmoji} <b>ALERTA EROWATCH</b> ${nivelEmoji}
+  let mensagem = `
+${nivelEmoji} <b>ALERTA EROWATCH v2.0</b> ${nivelEmoji}
 
 📍 <b>Local:</b> ${sensor.regiao}
 🏷️ <b>Sensor:</b> ${sensor.identificador}
+${sensor.tipo_solo ? `🪨 <b>Solo:</b> ${sensor.tipo_solo}` : ""}
 
 <b>📊 DADOS ATUAIS:</b>
 💧 Umidade Solo: <b>${medicao.umidade_solo.toFixed(1)}%</b>
 🌡️ Temperatura: <b>${medicao.temperatura_solo.toFixed(1)}°C</b>
 📐 Inclinação: <b>${medicao.inclinacao_graus.toFixed(1)}°</b>
+`;
 
+  if (medicao.indice_risco !== undefined && medicao.indice_risco !== null) {
+    mensagem += `📊 Índice de Risco: <b>${medicao.indice_risco.toFixed(
+      1
+    )}/100</b>\n`;
+  }
+
+  mensagem += `
 ⚠️ <b>RISCO: ${medicao.nivel_risco}</b>
 
 🕐 ${new Date(medicao.timestamp).toLocaleString("pt-BR")}
   `.trim();
+
+  return mensagem;
 }
 
 /**
@@ -339,7 +406,7 @@ ${nivelEmoji} <b>ALERTA EROWATCH</b> ${nivelEmoji}
  */
 function formatarRelatorioRotina(medicoes, sensores) {
   let mensagem = `
-☀️ <b>RELATÓRIO DIÁRIO EROWATCH</b> ☀️
+☀️ <b>RELATÓRIO DIÁRIO EROWATCH v2.0</b> ☀️
 
 ${new Date().toLocaleDateString("pt-BR", {
   weekday: "long",
@@ -359,10 +426,19 @@ ${new Date().toLocaleDateString("pt-BR", {
     BAIXO: [],
   };
 
+  // Calcular índice médio se disponível
+  let somaIndice = 0;
+  let countIndice = 0;
+
   medicoes.forEach((m) => {
     const sensor = sensores.find((s) => s.id === m.sensor_id);
     if (sensor) {
       porRisco[m.nivel_risco].push(sensor.regiao);
+    }
+
+    if (m.indice_risco !== undefined && m.indice_risco !== null) {
+      somaIndice += m.indice_risco;
+      countIndice++;
     }
   });
 
@@ -380,6 +456,12 @@ ${new Date().toLocaleDateString("pt-BR", {
     mensagem += `\n🟢 <b>BAIXO:</b> ${porRisco.BAIXO.join(", ")}`;
   }
 
+  // Mostrar índice médio se disponível
+  if (countIndice > 0) {
+    const indiceMedia = (somaIndice / countIndice).toFixed(1);
+    mensagem += `\n\n<b>📊 Índice Médio de Risco:</b> ${indiceMedia}/100`;
+  }
+
   mensagem += `
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -393,13 +475,14 @@ ${getDicaDoDia()}
 • Mutirão de Limpeza: Dom 25/11, 8h
 
 <i>Mantenha-se informado pelo grupo!</i>
+<i>Sistema v2.0 - Algoritmo Geotécnico Avançado</i>
   `.trim();
 
   return mensagem;
 }
 
 /**
- * Dicas rotativas
+ * Dicas rotativas (ATUALIZADAS v2.0)
  */
 function getDicaDoDia() {
   const dicas = [
@@ -411,6 +494,9 @@ function getDicaDoDia() {
     "Em caso de chuva forte, desligue aparelhos e tenha lanterna à mão.",
     "Mudas gratuitas disponíveis toda quinta na prefeitura. Aproveite!",
     "Observe seu terreno após chuvas. Mudanças podem indicar problemas.",
+    "Solos argilosos perdem 80% da coesão quando saturados. Muito cuidado!",
+    "Inclinações acima de 30° são críticas. Nunca construa sem contenção adequada.",
+    "Sistema v2.0 usa algoritmo baseado em estudos de Petrópolis-RJ.",
   ];
 
   const hoje = new Date().getDate();
