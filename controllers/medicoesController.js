@@ -1,7 +1,7 @@
 /**
  * CONTROLLER: Medições v2.0
  * Gerencia dados coletados pelos sensores
- * ATUALIZADO: Suporte ao algoritmo geotécnico avançado
+ * ATUALIZADO: Algoritmo Geotécnico Avançado (Dinâmico via DB)
  */
 
 const supabase = require("../config/supabase");
@@ -13,11 +13,57 @@ const {
 const {
   enviarMensagem,
   formatarAlertaCompleto,
-  formatarAlertaSimples,
 } = require("../config/telegram");
 
 const { calcularTaxaErosao } = require("./erosaoController");
 const { criarAlertaAutomatico } = require("./alertasController");
+
+// ============================================
+// CACHE: Tipos de Solo (1 hora)
+// ============================================
+let cacheTiposSolo = {
+  dados: null,
+  timestamp: 0
+};
+
+async function getParametrosSolo(tipoSoloNome) {
+  const agora = Date.now();
+  
+  // Atualizar cache se necessário
+  if (!cacheTiposSolo.dados || agora - cacheTiposSolo.timestamp > 3600000) {
+    console.log("🔄 Atualizando cache de tipos de solo...");
+    const { data, error } = await supabase.from('tipos_solo').select('*');
+    if (!error && data) {
+      cacheTiposSolo.dados = {};
+      data.forEach(t => {
+        cacheTiposSolo.dados[t.nome] = {
+          saturacaoCritica: parseFloat(t.saturacao_critica),
+          saturacaoTotal: parseFloat(t.saturacao_total),
+          anguloAtritoCritico: parseFloat(t.angulo_atrito_critico),
+          coeficienteCoesao: parseFloat(t.coeficiente_coesao)
+        };
+      });
+      cacheTiposSolo.timestamp = agora;
+    } else {
+      console.error("❌ Erro ao buscar tipos de solo:", error);
+    }
+  }
+
+  // Fallback seguro se o cache falhar ou tipo não existir
+  const defaults = {
+    saturacaoCritica: 60.0,
+    saturacaoTotal: 85.0,
+    anguloAtritoCritico: 32.0,
+    coeficienteCoesao: 0.1
+  };
+
+  if (cacheTiposSolo.dados && cacheTiposSolo.dados[tipoSoloNome]) {
+    return cacheTiposSolo.dados[tipoSoloNome];
+  }
+
+  console.warn(`⚠️ Tipo de solo '${tipoSoloNome}' não encontrado no cache. Usando defaults.`);
+  return defaults;
+}
 
 // ============================================
 // CACHE: Previsão do tempo (1 hora)
@@ -29,7 +75,6 @@ async function buscarPrevisaoComCache(sensorId, latitude, longitude) {
   const cache = cachePrevisao[sensorId];
 
   if (cache && agora - cache.timestamp < 3600000) {
-    console.log("📦 Usando previsão do cache");
     return cache.dados;
   }
 
@@ -46,13 +91,115 @@ async function buscarPrevisaoComCache(sensorId, latitude, longitude) {
 }
 
 // ============================================
-// 1. CRIAR NOVA MEDIÇÃO (ESP32 envia dados)
+// ALGORITMO AVANÇADO DE RISCO (Portado do ESP32)
+// ============================================
+function calcularRiscoAvancado(dados, paramsSolo) {
+  const { umidade_solo, inclinacao_graus, alerta_chuva } = dados;
+  const { saturacaoCritica, saturacaoTotal, anguloAtritoCritico, coeficienteCoesao } = paramsSolo;
+
+  // ===== 1. ANÁLISE DE SATURAÇÃO DO SOLO (Peso 35%) =====
+  let fatorSaturacao = 0.0;
+
+  if (umidade_solo < saturacaoCritica) {
+    fatorSaturacao = (umidade_solo / saturacaoCritica) * 0.3;
+  } else if (umidade_solo < saturacaoTotal) {
+    const proporcao = (umidade_solo - saturacaoCritica) / (saturacaoTotal - saturacaoCritica);
+    fatorSaturacao = 0.3 + (proporcao * 0.4);
+  } else {
+    fatorSaturacao = 0.7 + ((umidade_solo - saturacaoTotal) / (100 - saturacaoTotal)) * 0.3;
+  }
+
+  // ===== 2. ANÁLISE DE INCLINAÇÃO (Peso 35%) =====
+  let fatorInclinacao = 0.0;
+
+  if (inclinacao_graus < 15.0) {
+    fatorInclinacao = (inclinacao_graus / 15.0) * 0.2;
+  } else if (inclinacao_graus < 30.0) {
+    const proporcao = (inclinacao_graus - 15.0) / 15.0;
+    fatorInclinacao = 0.2 + (proporcao * 0.3);
+  } else if (inclinacao_graus < anguloAtritoCritico) {
+    const proporcao = (inclinacao_graus - 30.0) / (anguloAtritoCritico - 30.0);
+    fatorInclinacao = 0.5 + (proporcao * 0.3);
+  } else {
+    fatorInclinacao = 0.8 + Math.min(0.2, (inclinacao_graus - anguloAtritoCritico) / 10.0);
+  }
+
+  // ===== 3. INTERAÇÃO SATURAÇÃO-INCLINAÇÃO (Peso 20%) =====
+  let perdaCoesao = 1.0;
+  if (umidade_solo > saturacaoCritica) {
+    const proporcaoSat = (umidade_solo - saturacaoCritica) / (saturacaoTotal - saturacaoCritica);
+    perdaCoesao = 1.0 - (coeficienteCoesao * proporcaoSat);
+  }
+  
+  const fatorInteracao = fatorSaturacao * fatorInclinacao * perdaCoesao; 
+
+  // ===== 4. FATOR CHUVA INTENSA (Peso 10%) =====
+  let fatorChuva = 0.0;
+  if (alerta_chuva) {
+    if (umidade_solo > saturacaoCritica) {
+      fatorChuva = 0.3;
+    } else {
+      fatorChuva = 0.15;
+    }
+  }
+
+  // ===== 5. CÁLCULO DO ÍNDICE DE RISCO TOTAL =====
+  let indiceRisco = (fatorSaturacao * 0.35) +
+                    (fatorInclinacao * 0.35) +
+                    (fatorInteracao * 0.20) +
+                    (fatorChuva * 0.10);
+
+  indiceRisco = Math.min(100, Math.max(0, indiceRisco * 100));
+
+  // ===== 6. CLASSIFICAÇÃO E RECOMENDAÇÕES =====
+  let nivelRisco = "BAIXO";
+  let recomendacao = "Condições normais. Monitoramento de rotina suficiente.";
+
+  if (indiceRisco < 30) {
+    nivelRisco = "BAIXO";
+    recomendacao = "Condições normais. Monitoramento de rotina suficiente.";
+  } else if (indiceRisco < 55) {
+    nivelRisco = "MEDIO";
+    if (umidade_solo > 60) {
+      recomendacao = "Atenção: Solo com umidade elevada. Evitar cortes/aterros. Monitorar drenagem.";
+    } else {
+      recomendacao = "Atenção: Inclinação significativa. Verificar estabilidade do talude e vegetação.";
+    }
+  } else if (indiceRisco < 75) {
+    nivelRisco = "ALTO";
+    recomendacao = "ALERTA: Condições críticas detectadas. Vistoriar área, preparar evacuação preventiva.";
+  } else {
+    nivelRisco = "CRITICO";
+    recomendacao = "PERIGO IMINENTE! Solo saturado + inclinação crítica. EVACUAR ÁREA IMEDIATAMENTE!";
+  }
+
+  // Alerta especial para chuva + saturação
+  if (alerta_chuva && umidade_solo > saturacaoCritica) {
+    nivelRisco = "CRITICO";
+    recomendacao = "EMERGÊNCIA: Chuva intensa prevista com solo já saturado. RISCO EXTREMO DE DESLIZAMENTO!";
+    if (indiceRisco < 75) indiceRisco = 85.0;
+  }
+
+  return {
+    indiceRisco,
+    nivelRisco,
+    recomendacao,
+    fatores: {
+      saturacao: fatorSaturacao,
+      inclinacao: fatorInclinacao,
+      interacao: fatorInteracao,
+      chuva: fatorChuva,
+      perdaCoesao
+    }
+  };
+}
+
+
+// ============================================
+// 1. CRIAR NOVA MEDIÇÃO
 // ============================================
 async function criarMedicao(req, res) {
   try {
-    console.log("\n📌 [MEDIÇÃO v2.0] Iniciando criação de medição...");
-    console.log("   Payload:", JSON.stringify(req.body, null, 2));
-
     const {
       sensor_id,
       umidade_solo,
@@ -60,83 +207,45 @@ async function criarMedicao(req, res) {
       umidade_ar,
       temperatura_ar,
       inclinacao_graus,
-      nivel_risco,
-      alerta_chuva,
-      // ===== NOVOS CAMPOS DO ALGORITMO AVANÇADO =====
-      indice_risco,
-      recomendacao,
-      fator_saturacao,
-      fator_inclinacao,
-      fator_interacao,
-      fator_chuva,
-      perda_coesao,
+      alerta_chuva
     } = req.body;
 
-    // ========================================
-    // VALIDAÇÕES
-    // ========================================
-    if (!sensor_id || !nivel_risco) {
-      console.error("❌ Campos obrigatórios faltando");
-      return res.status(400).json({
-        error: "Campos obrigatórios: sensor_id, nivel_risco",
-      });
+    if (!sensor_id) {
+      return res.status(400).json({ error: "Sensor ID obrigatório" });
     }
 
-    // Validar nível de risco
-    const niveisValidos = ["BAIXO", "MEDIO", "ALTO", "CRITICO"];
-    if (!niveisValidos.includes(nivel_risco)) {
-      return res.status(400).json({
-        error: `Nível de risco inválido. Use: ${niveisValidos.join(", ")}`,
-      });
+    // 1. Buscar Sensor
+    const { data: sensor, error: sensorError } = await supabase
+      .from("sensores")
+      .select("*")
+      .eq("id", sensor_id)
+      .single();
+
+    if (sensorError || !sensor) {
+      return res.status(404).json({ error: "Sensor não encontrado" });
     }
 
-    // Validar ranges
-    if (umidade_solo < 0 || umidade_solo > 100) {
-      return res.status(400).json({
-        error: "Umidade do solo deve estar entre 0 e 100%",
-      });
-    }
+    // 2. Obter Parâmetros do Solo (Dinâmico)
+    // Se tiver calibração customizada no sensor, usa ela. Se não, busca do tipo de solo.
+    let paramsSolo = { ...await getParametrosSolo(sensor.tipo_solo) };
+    
+    // Sobrescrever com calibração específica do sensor se existir
+    if (sensor.saturacao_critica) paramsSolo.saturacaoCritica = sensor.saturacao_critica;
+    if (sensor.saturacao_total) paramsSolo.saturacaoTotal = sensor.saturacao_total;
+    if (sensor.angulo_atrito_critico) paramsSolo.anguloAtritoCritico = sensor.angulo_atrito_critico;
+    if (sensor.coeficiente_coesao) paramsSolo.coeficienteCoesao = sensor.coeficiente_coesao;
 
-    if (inclinacao_graus < 0 || inclinacao_graus > 90) {
-      return res.status(400).json({
-        error: "Inclinação deve estar entre 0 e 90 graus",
-      });
-    }
+    // 3. Calcular Risco (Algoritmo Avançado)
+    const analiseRisco = calcularRiscoAvancado({
+      umidade_solo: parseFloat(umidade_solo),
+      inclinacao_graus: parseFloat(inclinacao_graus),
+      alerta_chuva: alerta_chuva
+    }, paramsSolo);
 
-    if (
-      indice_risco !== undefined &&
-      (indice_risco < 0 || indice_risco > 100)
-    ) {
-      return res.status(400).json({
-        error: "Índice de risco deve estar entre 0 e 100",
-      });
-    }
+    console.log(`\n🧠 Análise Avançada (Sensor ${sensor.identificador}):`);
+    console.log(`   Solo: ${sensor.tipo_solo} | Risco: ${analiseRisco.nivelRisco} (${analiseRisco.indiceRisco.toFixed(1)}%)`);
 
-    // ----------------------------
-    // VALIDAÇÃO TEMPERATURA SOLO
-    // ----------------------------
-    const TEMP_SOLO_MIN = parseFloat(process.env.TEMPERATURA_SOLO_MIN ?? -10);
-    const TEMP_SOLO_MAX = parseFloat(process.env.TEMPERATURA_SOLO_MAX ?? 60);
-
-    if (
-      temperatura_solo !== undefined &&
-      (temperatura_solo < TEMP_SOLO_MIN || temperatura_solo > TEMP_SOLO_MAX)
-    ) {
-      console.warn(
-        `⚠️ temperatura_solo ${temperatura_solo} fora do intervalo [${TEMP_SOLO_MIN}, ${TEMP_SOLO_MAX}]`
-      );
-      return res.status(400).json({
-        error: "temperatura_solo fora do intervalo permitido",
-        allowed_range: { min: TEMP_SOLO_MIN, max: TEMP_SOLO_MAX },
-        valor_recebido: temperatura_solo,
-      });
-    }
-
-    console.log("✅ Validações OK");
-
-    // ========================================
-    // INSERIR NO BANCO
-    // ========================================
+    // 4. Inserir Medição
     const dadosMedicao = {
       sensor_id,
       umidade_solo,
@@ -144,193 +253,57 @@ async function criarMedicao(req, res) {
       umidade_ar,
       temperatura_ar,
       inclinacao_graus,
-      nivel_risco,
       alerta_chuva: alerta_chuva || false,
+      nivel_risco: analiseRisco.nivelRisco,
+      indice_risco: analiseRisco.indiceRisco,
+      recomendacao: analiseRisco.recomendacao,
+      fator_saturacao: analiseRisco.fatores.saturacao,
+      fator_inclinacao: analiseRisco.fatores.inclinacao,
+      fator_interacao: analiseRisco.fatores.interacao,
+      fator_chuva: analiseRisco.fatores.chuva,
+      perda_coesao: analiseRisco.fatores.perdaCoesao
     };
-
-    // Adicionar novos campos se fornecidos
-    if (indice_risco !== undefined) dadosMedicao.indice_risco = indice_risco;
-    if (recomendacao) dadosMedicao.recomendacao = recomendacao;
-    if (fator_saturacao !== undefined)
-      dadosMedicao.fator_saturacao = fator_saturacao;
-    if (fator_inclinacao !== undefined)
-      dadosMedicao.fator_inclinacao = fator_inclinacao;
-    if (fator_interacao !== undefined)
-      dadosMedicao.fator_interacao = fator_interacao;
-    if (fator_chuva !== undefined) dadosMedicao.fator_chuva = fator_chuva;
-    if (perda_coesao !== undefined) dadosMedicao.perda_coesao = perda_coesao;
-
-    console.log("📝 Dados a inserir:", Object.keys(dadosMedicao));
 
     const { data, error } = await supabase
       .from("medicoes")
       .insert([dadosMedicao])
-      .select();
-
-    if (error) {
-      console.error("❌ Erro ao inserir:", error);
-      throw error;
-    }
-
-    const medicaoInserida = data[0];
-    console.log(`✅ Medição inserida: ID ${medicaoInserida.id}`);
-    console.log(`   Índice de Risco: ${medicaoInserida.indice_risco || "N/A"}`);
-    console.log(`   Nível: ${medicaoInserida.nivel_risco}`);
-
-    // ========================================
-    // BUSCAR DADOS DO SENSOR
-    // ========================================
-    console.log("📍 Buscando dados do sensor...");
-    const { data: sensor, error: sensorError } = await supabase
-      .from("sensores")
-      .select("*")
-      .eq("id", sensor_id)
+      .select()
       .single();
 
-    if (sensorError) {
-      console.error("❌ Erro ao buscar sensor:", sensorError);
-    } else {
-      console.log(`✅ Sensor: ${sensor?.identificador} (${sensor?.regiao})`);
-      console.log(`   Tipo de Solo: ${sensor?.tipo_solo || "NÃO CONFIGURADO"}`);
-    }
+    if (error) throw error;
 
-    // ========================================
-    // BUSCAR PREVISÃO DO TEMPO COM CACHE
-    // ========================================
-    console.log("🌤️ Buscando previsão do clima...");
-    let previsao = null;
-    if (sensor && sensor.latitude && sensor.longitude) {
-      previsao = await buscarPrevisaoComCache(
-        sensor_id,
-        sensor.latitude,
-        sensor.longitude
-      );
-      if (previsao) {
-        console.log(`✅ Previsão: ${previsao.chuva_proximas_24h}mm chuva`);
-
-        // Salvar previsão no banco
-        await supabase.from("previsoes_clima").insert([
-          {
-            sensor_id,
-            temperatura: previsao.temperatura,
-            umidade: previsao.umidade,
-            vento: previsao.vento,
-            descricao: previsao.descricao,
-            chuva_proximas_24h: previsao.chuva_proximas_24h,
-            risco_chuva_intensa: previsao.risco_chuva_intensa,
-          },
-        ]);
-      }
-    }
-
-    // ========================================
-    // CALCULAR TAXA DE EROSÃO
-    // ========================================
-    const erosao = calcularTaxaErosao(medicaoInserida, previsao);
-    console.log(`📊 Erosão: ${erosao?.taxa} t/ha (${erosao?.risco})`);
-
-    // ========================================
-    // RECALCULAR RISCO COMBINANDO SOLO + CLIMA
-    // ========================================
-    let riscoFinal = nivel_risco;
-    if (previsao) {
-      riscoFinal = calcularRiscoCombinado(medicaoInserida, previsao);
-      console.log(`⚠️ Risco ajustado: ${nivel_risco} → ${riscoFinal}`);
-
-      // Atualizar no banco se mudou
-      if (riscoFinal !== nivel_risco) {
-        await supabase
-          .from("medicoes")
-          .update({ nivel_risco: riscoFinal })
-          .eq("id", medicaoInserida.id);
-
-        medicaoInserida.nivel_risco = riscoFinal;
-      }
-    }
-
-    // ========================================
-    // CRIAR ALERTA AUTOMÁTICO
-    // ========================================
-    console.log("\n🔔 [ALERTAS] Verificando necessidade de alerta...");
-    console.log(`   Nível de risco final: ${riscoFinal}`);
-    console.log(`   Índice numérico: ${indice_risco || "N/A"}`);
+    // 5. Processar Previsão e Alertas
+    const previsao = await buscarPrevisaoComCache(sensor_id, sensor.latitude, sensor.longitude);
+    const erosao = calcularTaxaErosao(data, previsao);
 
     let alertaCriado = null;
-
-    if (riscoFinal === "CRITICO" || riscoFinal === "ALTO") {
-      console.log(`🚨 Criando alerta automático (${riscoFinal})...`);
-
-      // Usar o novo sistema de alertas automáticos
+    if (analiseRisco.nivelRisco === "CRITICO" || analiseRisco.nivelRisco === "ALTO") {
       alertaCriado = await criarAlertaAutomatico({
-        ...medicaoInserida,
+        ...data,
         sensor,
         previsao,
-        erosao,
+        erosao
       });
 
       if (alertaCriado) {
-        console.log(`✅ Alerta criado: ID ${alertaCriado.id}`);
-
-        // ========================================
-        // ENVIAR PARA TELEGRAM
-        // ========================================
-        console.log("📨 [TELEGRAM] Enviando notificação...");
         try {
-          const mensagem = formatarAlertaCompleto(
-            medicaoInserida,
-            sensor,
-            previsao,
-            erosao
-          );
-
-          const enviado = await enviarMensagem(mensagem);
-
-          if (enviado) {
-            console.log("✅ [TELEGRAM] Mensagem enviada!");
-          } else {
-            console.error("❌ [TELEGRAM] Falha ao enviar");
-          }
-        } catch (telegramError) {
-          console.error("❌ [TELEGRAM] Erro:", telegramError.message);
+          const msg = formatarAlertaCompleto(data, sensor, previsao, erosao);
+          await enviarMensagem(msg);
+        } catch (e) {
+          console.error("Erro Telegram:", e.message);
         }
       }
-    } else {
-      console.log(`ℹ️ Sem necessidade de alerta (risco: ${riscoFinal})`);
     }
 
-    console.log("✅ Processo concluído\n");
-
-    // ========================================
-    // RESPOSTA
-    // ========================================
     res.status(201).json({
       success: true,
-      message: "Medição registrada com sucesso",
       data: {
-        medicao: {
-          ...medicaoInserida,
-          nivel_risco: riscoFinal,
-        },
-        erosao,
-        alerta: alertaCriado
-          ? {
-              id: alertaCriado.id,
-              tipo: alertaCriado.tipo_alerta,
-              criticidade: alertaCriado.nivel_criticidade,
-            }
-          : null,
-        algoritmo_v2: {
-          indice_risco: indice_risco || null,
-          fatores: {
-            saturacao: fator_saturacao || null,
-            inclinacao: fator_inclinacao || null,
-            interacao: fator_interacao || null,
-            chuva: fator_chuva || null,
-            perda_coesao: perda_coesao || null,
-          },
-        },
-      },
+        medicao: data,
+        analise: analiseRisco,
+        alerta: alertaCriado ? { id: alertaCriado.id } : null
+      }
     });
+
   } catch (error) {
     console.error("❌ Erro ao criar medição:", error);
     res.status(500).json({ error: error.message });
@@ -519,6 +492,8 @@ async function buscarEstatisticas(req, res) {
         sensores (identificador, regiao, tipo_solo),
         umidade_solo,
         temperatura_solo,
+        umidade_ar,
+        temperatura_ar,
         inclinacao_graus,
         nivel_risco,
         indice_risco,

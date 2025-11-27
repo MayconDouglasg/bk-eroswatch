@@ -398,7 +398,45 @@ async function resolverAlertasSensor(req, res) {
 }
 
 // ============================================
-// 5. BUSCAR HISTÓRICO DE ALERTAS
+// 5. IGNORAR ALERTA (Falso Positivo)
+// ============================================
+async function ignorarAlerta(req, res) {
+  try {
+    const { id } = req.params;
+    const { ignorado_por, motivo } = req.body;
+
+    const { data, error } = await supabase
+      .from("alertas")
+      .update({
+        status: "ignorado",
+        resolvido_em: new Date().toISOString(), // Usamos o mesmo campo de data
+        resolvido_por: ignorado_por || "Admin",
+        observacoes: motivo || "Marcado como falso positivo"
+      })
+      .eq("id", id)
+      .select();
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: "Alerta não encontrado" });
+    }
+
+    console.log(`🚫 Alerta ${id} ignorado por ${ignorado_por || "Admin"}`);
+
+    res.json({
+      success: true,
+      message: "Alerta ignorado (falso positivo)",
+      data: data[0],
+    });
+  } catch (error) {
+    console.error("❌ Erro ao ignorar alerta:", error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// ============================================
+// 6. BUSCAR HISTÓRICO DE ALERTAS
 // ============================================
 async function buscarHistoricoAlertas(req, res) {
   try {
@@ -452,7 +490,7 @@ async function buscarHistoricoAlertas(req, res) {
 }
 
 // ============================================
-// 6. ESTATÍSTICAS DE ALERTAS
+// 7. ESTATÍSTICAS DE ALERTAS
 // ============================================
 async function buscarEstatisticasAlertas(req, res) {
   try {
@@ -479,6 +517,7 @@ async function buscarEstatisticasAlertas(req, res) {
       total: data.length,
       ativos: data.filter((a) => a.status === "ativo").length,
       resolvidos: data.filter((a) => a.status === "resolvido").length,
+      ignorado: data.filter((a) => a.status === "ignorado").length,
       por_criticidade: {
         critico: data.filter((a) => a.nivel_criticidade === "CRITICO").length,
         alto: data.filter((a) => a.nivel_criticidade === "ALTO").length,
@@ -517,6 +556,7 @@ module.exports = {
   criarAlerta,
   resolverAlerta,
   resolverAlertasSensor,
+  ignorarAlerta,
   buscarHistoricoAlertas,
   buscarEstatisticasAlertas,
 };

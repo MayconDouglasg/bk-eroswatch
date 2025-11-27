@@ -152,9 +152,117 @@ async function atualizarSensor(req, res) {
   }
 }
 
+// ============================================
+// 5. DELETAR SENSOR (SOFT DELETE)
+// ============================================
+async function deletarSensor(req, res) {
+  try {
+    const { id } = req.params;
+
+    // Soft delete: apenas marca como inativo
+    const { data, error } = await supabase
+      .from('sensores')
+      .update({ status: 'inativo' })
+      .eq('id', id)
+      .select();
+
+    if (error) throw error;
+
+    console.log(`🗑️ Sensor ${id} marcado como inativo`);
+
+    res.json({
+      success: true,
+      message: 'Sensor removido com sucesso (inativo)',
+      sensor: data[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao deletar sensor:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// ============================================
+// 6. CALIBRAR SENSOR
+// ============================================
+async function calibrarSensor(req, res) {
+  try {
+    const { id } = req.params;
+    const {
+      tipo_solo,
+      saturacao_critica,
+      saturacao_total,
+      angulo_atrito_critico,
+      coeficiente_coesao,
+      motivo,
+      realizado_por
+    } = req.body;
+
+    // 1. Buscar valores atuais para histórico
+    const { data: sensorAtual } = await supabase
+      .from('sensores')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (!sensorAtual) {
+      return res.status(404).json({ error: 'Sensor não encontrado' });
+    }
+
+    // 2. Atualizar Sensor
+    const updates = {
+      tipo_solo,
+      saturacao_critica,
+      saturacao_total,
+      angulo_atrito_critico,
+      coeficiente_coesao,
+      ultima_manutencao: new Date()
+    };
+
+    const { data: sensorNovo, error: updateError } = await supabase
+      .from('sensores')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    // 3. Registrar no Histórico de Calibrações
+    await supabase.from('calibracoes').insert([{
+      sensor_id: id,
+      tipo_solo,
+      saturacao_critica_anterior: sensorAtual.saturacao_critica,
+      saturacao_critica_nova: saturacao_critica,
+      saturacao_total_anterior: sensorAtual.saturacao_total,
+      saturacao_total_nova: saturacao_total,
+      angulo_atrito_anterior: sensorAtual.angulo_atrito_critico,
+      angulo_atrito_nova: angulo_atrito_critico,
+      coeficiente_coesao_anterior: sensorAtual.coeficiente_coesao,
+      coeficiente_coesao_nova: coeficiente_coesao,
+      motivo,
+      realizado_por
+    }]);
+
+    console.log(`🔧 Sensor ${id} calibrado por ${realizado_por}`);
+
+    res.json({
+      success: true,
+      message: 'Calibração realizada com sucesso',
+      sensor: sensorNovo
+    });
+
+  } catch (error) {
+    console.error('❌ Erro na calibração:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   listarSensores,
   buscarSensorPorId,
   criarSensor,
-  atualizarSensor
+  atualizarSensor,
+  deletarSensor,
+  calibrarSensor
 };
